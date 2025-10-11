@@ -1,82 +1,108 @@
+# region imports
+from AlgorithmImports import *
+# endregion
+
 from dataclasses import dataclass
+from typing import Optional, Dict
 import pandas as pd
-import numpy as np
 from datetime import datetime
 
-# === 5.1–5.3: Структура диапазона Фибоначчи ===
+# === 5.3: структура диапазона Фибоначчи ===
 @dataclass
 class FibRange:
     high: float
     low: float
-    generated_time: datetime
-    last_update_time: datetime
-    levels: dict
+    generated_time: pd.Timestamp
+    last_update_time: pd.Timestamp
+    levels: Dict[float, float]
 
-# === 5.2: Расчёт уровней ===
-def construct_fibonacci_levels(high: float, low: float) -> dict:
-    """Compute Fibonacci levels based on swing high and low."""
+# === 5.2: расчёт уровней ===
+def construct_fibonacci_levels(high: float, low: float) -> Dict[float, float]:
+    """
+    Compute Fibonacci-style levels according to spec.
+    Returns dict: { -0.2: ..., 0.0: low, 0.25: ..., 0.5: ..., 0.75: ..., 1.0: high, 1.2: ... }
+    """
     diff = high - low
-    levels = {
+    return {
         -0.2: high + diff * (-0.2),
-        0.0: low,
-        0.25: low + diff * 0.25,
-        0.5: low + diff * 0.5,
-        0.75: low + diff * 0.75,
-        1.0: high,
-        1.2: high + diff * 0.2
+         0.0: low,
+         0.25: low + diff * 0.25,
+         0.5: low + diff * 0.5,
+         0.75: low + diff * 0.75,
+         1.0: high,
+         1.2: high + diff * 0.2
     }
-    return levels
 
-# === 5.1 + 5.3: Построение диапазона на основе swing-пары ===
-def build_fib_range(swings: pd.DataFrame, ohlc: pd.DataFrame) -> FibRange | None:
+# === 5.1 + 5.3: построение диапазона на основе последней подтверждённой пары swings ===
+def build_fib_range(swings: pd.DataFrame, ohlc: pd.DataFrame) -> Optional[FibRange]:
     """
-    Build Fibonacci range based on the latest confirmed swing pair.
+    Build a FibRange from confirmed swings + ohlc.
+
+    Parameters
+    ----------
+    swings : pd.DataFrame
+        DataFrame indexed by timestamps with columns:
+            - "HighLow" :  1 for swing high, -1 for swing low, NaN otherwise
+            - "Level"   : price level (prefer close/high/low as stored by swing detector)
+    ohlc : pd.DataFrame
+        OHLC DataFrame indexed by timestamps (used to set last_update_time and reference).
+
+    Returns
+    -------
+    FibRange or None
+        FibRange when last two swings form a valid pair (high->low or low->high),
+        otherwise None.
     """
+    # only consider confirmed swings
     valid_swings = swings.dropna(subset=["HighLow"])
     if len(valid_swings) < 2:
-        return None  # недостаточно точек для построения
+        return None
 
-    # Берём последние две swing-точки
+    # take last two confirmed swings in chronological order
     last_two = valid_swings.tail(2)
     idx1, idx2 = last_two.index[0], last_two.index[1]
-    type1, type2 = last_two.iloc[0]["HighLow"], last_two.iloc[1]["HighLow"]
-    price1, price2 = last_two.iloc[0]["Level"], last_two.iloc[1]["Level"]
+    type1 = float(last_two.iloc[0]["HighLow"])
+    type2 = float(last_two.iloc[1]["HighLow"])
+    price1 = float(last_two.iloc[0]["Level"])
+    price2 = float(last_two.iloc[1]["Level"])
 
-    # Проверяем порядок: high → low или low → high
-    if type1 == 1 and type2 == -1:
+    # valid sequences: high (1) then low (-1)  OR  low (-1) then high (1)
+    if type1 == 1.0 and type2 == -1.0:
         high, low = price1, price2
-    elif type1 == -1 and type2 == 1:
+    elif type1 == -1.0 and type2 == 1.0:
         high, low = price2, price1
     else:
-        return None  # невалидная последовательность (два high подряд и т.п.)
+        # sequence invalid (e.g., two highs in a row) — do not build
+        return None
 
-    # Построение уровней
     levels = construct_fibonacci_levels(high, low)
-    generated_time = idx2  # время последнего swing
-    last_update_time = ohlc.index[-1]
+    generated_time = pd.Timestamp(idx2)
+    last_update_time = pd.Timestamp(ohlc.index[-1]) if len(ohlc.index) > 0 else pd.Timestamp.now()
 
-    return FibRange(high, low, generated_time, last_update_time, levels)
+    return FibRange(high=high, low=low, generated_time=generated_time,
+                    last_update_time=last_update_time, levels=levels)
 
-# === 5.4: Проверка актуальности диапазона ===
+# === 5.4 Утилита: проверка "сломался ли диапазон" ===
 def is_range_broken(fib_range: FibRange, current_price: float) -> bool:
-    """Return True if price breaks the range (above high or below low)."""
+    """
+    Range is considered broken when current_price closes beyond high or below low.
+    (This is a pure numeric check — interpretation of 'close' vs intrabar handling
+    should be done by caller.)
+    """
     return current_price > fib_range.high or current_price < fib_range.low
 
-# === Тестирование на текущих swing-данных ===
-fib_range = build_fib_range(swings, ohlc)
-
-if fib_range:
-    print("Fibonacci Range Built:")
-    print(f"High: {fib_range.high:.2f}")
-    print(f"Low: {fib_range.low:.2f}")
-    print("Levels:")
-    for lvl, val in fib_range.levels.items():
-        print(f"  {lvl:>4}: {val:.2f}")
-else:
-    print("Not enough valid swings to build Fibonacci range.")
-
-# === Проверка пробоя диапазона ===
-if fib_range:
-    current_price = ohlc["close"].iloc[-1]
-    broken = is_range_broken(fib_range, current_price)
-    print(f"\nRange broken? {broken}")
+# === Пример использования (комментарий) ===
+# В main алгоритме:
+#   1) Вызываешь swing detector: swings = swing_highs_lows_online(ohlc, ...)
+#   2) Передаёшь swings и ohlc в build_fib_range(swings, ohlc)
+#   3) Если build_fib_range вернул объект, используешь fib_range.levels для логики входа/стопов/TP
+#   4) Перестраиваешь диапазон только если:
+#         - появился новый confirmed swing pair (build_fib_range вернул новую пару), или
+#         - is_range_broken(...) вернул True (range сломан)
+#
+# Пример (в main):
+#   swings = swing_highs_lows_online(ohlc, N_candidates=[10], N_confirmation=3, ...)
+#   fib_range = build_fib_range(swings, ohlc)
+#   if fib_range:
+#       lvl_025 = fib_range.levels[0.25]
+#       # использовать уровни для логики
