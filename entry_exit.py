@@ -40,7 +40,17 @@ def _in_zone(price: float, a: float, b: float) -> bool:
     lo, hi = (a, b) if a <= b else (b, a)
     return lo <= price <= hi
 
-def make_long_signal(close_price: float, next_open: Optional[float], levels: Dict[float, float], p: EntryParams) -> Optional[EntrySignal]:
+def make_long_signal(
+    close_price: float,
+    next_open: Optional[float],
+    levels: Dict[float, float],
+    p: EntryParams,
+    range_state: RangeState
+) -> Optional[EntrySignal]:
+    # ✅ не входим, если range ещё не подтверждён
+    if range_state != RangeState.TRADING:
+        return None
+
     z0, z025 = levels[0.0], levels[0.25]
     if not _in_zone(close_price, z0, z025):
         return None
@@ -48,12 +58,24 @@ def make_long_signal(close_price: float, next_open: Optional[float], levels: Dic
         need = close_price * (1.0 + p.min_momentum_pct / 100.0)
         if next_open <= need:
             return None
-    entry = ((z0 + z025) / 2.0) if p.use_limit else (next_open if (p.enter_on_next_open and next_open is not None) else close_price)
+    entry = ((z0 + z025) / 2.0) if p.use_limit else (
+        next_open if (p.enter_on_next_open and next_open is not None) else close_price)
     sl = levels[-0.2] - p.small_buffer
     tp = levels[1.0]
-    return EntrySignal(Side.LONG, float(entry), float(sl), float(tp), "LONG: close in [level(0), level(0.25)]", {"zone":[z0,z025]})
+    return EntrySignal(Side.LONG, float(entry), float(sl), float(tp),
+                       "LONG: close in [0–0.25]", {"zone": [z0, z025]})
 
-def make_short_signal(close_price: float, next_open: Optional[float], levels: Dict[float, float], p: EntryParams) -> Optional[EntrySignal]:
+
+def make_short_signal(
+    close_price: float,
+    next_open: Optional[float],
+    levels: Dict[float, float],
+    p: EntryParams,
+    range_state: RangeState
+) -> Optional[EntrySignal]:
+    if range_state != RangeState.TRADING:
+        return None
+
     z075, z10 = levels[0.75], levels[1.0]
     if not _in_zone(close_price, z075, z10):
         return None
@@ -61,10 +83,12 @@ def make_short_signal(close_price: float, next_open: Optional[float], levels: Di
         need = close_price * (1.0 - p.min_momentum_pct / 100.0)
         if next_open >= need:
             return None
-    entry = ((z075 + z10) / 2.0) if p.use_limit else (next_open if (p.enter_on_next_open and next_open is not None) else close_price)
+    entry = ((z075 + z10) / 2.0) if p.use_limit else (
+        next_open if (p.enter_on_next_open and next_open is not None) else close_price)
     sl = levels[1.2] + p.small_buffer
     tp = levels[0.0]
-    return EntrySignal(Side.SHORT, float(entry), float(sl), float(tp), "SHORT: close in [level(0.75), level(1.0)]", {"zone":[z075,z10]})
+    return EntrySignal(Side.SHORT, float(entry), float(sl), float(tp),
+                       "SHORT: close in [0.75–1.0]", {"zone": [z075, z10]})
 
 # ====== EXIT ======
 class ExitReason(str, Enum):
